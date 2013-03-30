@@ -1,6 +1,7 @@
 package IO::Async::Process::Wrapper::TransferFD;
 use strict;
 use warnings;
+use feature qw(say);
 
 our $VERSION = '0.001';
 
@@ -90,6 +91,7 @@ sub new {
 			my $loop = $loop_class->new;
 			my $io = IO::Handle->new;
 			die "Failed to open control channel - $!" unless $io->fdopen(3, 'r+');
+			say "i am $io";
 
 			my $control = IO::Async::TransferFD->new(
 				loop => $loop,
@@ -113,6 +115,8 @@ sub new {
 		%args,
 	);
 	$loop->add($proc);
+	my $io = $proc->fd(3)->write_handle;
+	say "and parent is $io";
 	my $control = IO::Async::TransferFD->new(
 		loop => $loop,
 		handle => $io,

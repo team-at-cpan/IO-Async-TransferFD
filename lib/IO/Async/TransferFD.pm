@@ -116,6 +116,7 @@ sub send_queued {
 	my $self = shift;
 	# Send a single batch at a time
 	if(@{$self->{pending}}) {
+		warn "send Handle is now " . $self->{handle};
 		sendmsg $self->handle, $self->outgoing_packet(
 			my @fd = splice @{$self->{pending}}, 0, MAX_FD_PER_PACKET
 		);
@@ -144,8 +145,11 @@ sub accept_fds {
 	my $self = shift;
 	my $hdr = shift;
 	my $code = shift;
+	warn "accepting";
+		warn "Handle is now " . $self->{handle};
 	recvmsg $self->handle, $hdr;
 	my @fd = $code->();
+	warn "had @fd";
 	foreach my $fileno (@fd) {
 		open my $fh, '+<&=', $fileno or die $!;
 		$self->on_filehandle($fh);
@@ -163,25 +167,29 @@ sub configure {
 	my $self = shift;
 	my %args = @_;
 
-	my $loop = delete $args{loop};
-	$self->{handle} = delete $args{handle};
-	$self->{on_filehandle} = delete $args{on_filehandle};
+	my $loop = delete $args{loop} || $self->{loop};
+	Scalar::Util::weaken($self->{loop} = $loop);
+	$self->{on_filehandle} = delete $args{on_filehandle} if exists $args{on_filehandle};
 
-	$loop->add(my $h = IO::Async::Handle->new(
-		handle => $self->handle,
-		on_write_ready => $self->curry::weak::send_queued,
-		on_read_ready => $self->curry::weak::read_pending,
-	));
-	$h->want_writeready(1);
-	$h->want_readready(1);
-	Scalar::Util::weaken($self->{h} = $h);
+	if(exists $args{handle}) {
+		$self->{handle} = delete $args{handle};
+		warn "Handle is now " . $self->{handle};
+		$loop->add(my $h = IO::Async::Handle->new(
+			handle => $self->handle,
+			on_write_ready => $self->curry::weak::send_queued,
+			on_read_ready => $self->curry::weak::read_pending,
+		));
+		$h->want_writeready(1);
+		$h->want_readready(1);
+		Scalar::Util::weaken($self->{h} = $h);
+	};
 	$self
 }
 
 sub send {
 	my $self = shift;
 	push @{$self->{pending}}, @_;
-	$self->{h}->want_writeready(1);
+	$self->{h}->want_writeready(1) if $self->{h};
 	$self
 }
 
