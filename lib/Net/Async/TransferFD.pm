@@ -1,13 +1,15 @@
-package IO::Async::TransferFD;
+package Net::Async::TransferFD;
 # ABSTRACT: send handles between processes
 use strict;
 use warnings;
+
+use parent qw(IO::Async::Notifier);
 
 our $VERSION = '0.001';
 
 =head1 NAME
 
-IO::Async::TransferFD - support for transferring handles between
+Net::Async::TransferFD - support for transferring handles between
 processes via socketpair
 
 =head1 SYNOPSIS
@@ -16,14 +18,13 @@ processes via socketpair
    code => sub { },
    fd3 => { via => 'socketpair' },
  );
- my $control = IO::Async::TransferFD->new(
-   loop => $loop,
+ $loop->add(my $control = Net::Async::TransferFD->new(
    handle => $proc->fd(3)->write_handle,
-   on_filehandle => sub {
+   on_fh => sub {
      my $h = shift;
      say "New handle $h - " . join '', <$h>;
    }
- );
+ ));
  $control->send(\*STDIN);
 
 =head1 DESCRIPTION
@@ -35,9 +36,12 @@ to other active processes.
 
 =cut
 
+use IO::Async::Handle;
+
 use Socket::MsgHdr qw(sendmsg recvmsg);
 use Socket qw(AF_UNIX SOCK_STREAM PF_UNSPEC SOL_SOCKET SCM_RIGHTS);
 use curry::weak;
+use Scalar::Util qw(weaken);
 
 # Not sure of a good value for this but 16 seems low enough
 # to avoid problems, we'll split into multiple packets if
@@ -49,15 +53,6 @@ use constant MAX_FD_PER_PACKET => 16;
 =head1 METHODS
 
 =cut
-
-sub new {
-	my $class = shift;
-	my $self = bless {
-		pending => [],
-	}, $class;
-	$self->configure(@_);
-	$self
-}
 
 =head2 outgoing_packet
 
@@ -72,8 +67,8 @@ sub outgoing_packet {
 	my $self = shift;
 	# FIXME presumably this 512 figure should really be calculated,
 	# also surely it'd be controllen rather than buflen?
-	my $hdr = Socket::MsgHdr->new(buflen => 512);
 	my $data = pack "i" x @_, map $_->fileno, @_;
+	my $hdr = Socket::MsgHdr->new(buflen => length($data));
 	$hdr->cmsghdr(SOL_SOCKET, SCM_RIGHTS, $data);
 	$hdr
 }
@@ -93,7 +88,7 @@ sub recv_fds {
 	my $self = shift;
 	my $handler = shift;
 	# FIXME more magic numbers
-	my $inHdr = Socket::MsgHdr->new(buflen => 8192, controllen => 256);
+	my $inHdr = Socket::MsgHdr->new(buflen => 512, controllen => 512);
 	$handler->($inHdr, sub {
 		my ($level, $type, $data) = $inHdr->cmsghdr();
 		unpack('i*', $data);
@@ -115,22 +110,26 @@ Returns $self.
 sub send_queued {
 	my $self = shift;
 	# Send a single batch at a time
-	if(@{$self->{pending}}) {
-		warn "send Handle is now " . $self->{handle};
-		sendmsg $self->handle, $self->outgoing_packet(
-			my @fd = splice @{$self->{pending}}, 0, MAX_FD_PER_PACKET
+	if(@{$self->{pending} || []}) {
+		my @chunk = splice @{$self->{pending}}, 0, MAX_FD_PER_PACKET;
+		my @fd = map $_->[0], @chunk;
+		my @future = map $_->[1], @chunk;
+		$self->debug_printf("Sending %d FDs - %s", scalar(@fd), join ',', map $_->fileno, @fd);
+		sendmsg $self->handle->write_handle, $self->outgoing_packet(
+			@fd
 		);
 		$_->close for @fd;
+		$_->done for @future;
 	}
 	# If we have any leftovers, we hope to be called next time around
-	$self->{h}->want_writeready(0) unless @{$self->{pending}};
+	$self->handle->want_writeready(0) if $self->handle && ! @{$self->{pending}||[]};
 	$self
 }
 
 =head2 read_pending
 
 Reads any pending messages, converting to FDs
-as appropriate and calling the on_filehandle callback.
+as appropriate and calling the on_fh callback.
 
 Returns $self.
 
@@ -142,24 +141,26 @@ sub read_pending {
 }
 
 sub accept_fds {
-	my $self = shift;
-	my $hdr = shift;
-	my $code = shift;
-	warn "accepting";
-		warn "Handle is now " . $self->{handle};
-	recvmsg $self->handle, $hdr;
+	my ($self, $hdr, $code) = @_;
+	defined(recvmsg $self->handle->write_handle, $hdr, 0)
+		or $self->debug_printf("Failed to recvmsg - %s", $!);
+	unless(length $hdr->{control}) {
+		$self->debug_printf("No control data, remote has probably gone away - closing");
+		$self->handle->want_readready(0);
+		return;
+	}
+
 	my @fd = $code->();
-	warn "had @fd";
 	foreach my $fileno (@fd) {
+		$self->debug_printf("Opening handle for %d", $fileno);
 		open my $fh, '+<&=', $fileno or die $!;
-		$self->on_filehandle($fh);
+		$self->on_fh($fh);
 	}
 }
 
-sub on_filehandle {
-	my $self = shift;
-	my $fh = shift;
-	$self->{on_filehandle}->($fh) if $self->{on_filehandle};
+sub on_fh {
+	my ($self, $fh) = @_;
+	$self->{on_fh}->($fh) if $self->{on_fh};
 	$self
 }
 
@@ -167,30 +168,55 @@ sub configure {
 	my $self = shift;
 	my %args = @_;
 
-	my $loop = delete $args{loop} || $self->{loop};
-	Scalar::Util::weaken($self->{loop} = $loop);
-	$self->{on_filehandle} = delete $args{on_filehandle} if exists $args{on_filehandle};
+	$self->{on_fh} = delete $args{on_fh} if exists $args{on_fh};
 
 	if(exists $args{handle}) {
-		$self->{handle} = delete $args{handle};
-		warn "Handle is now " . $self->{handle};
-		$loop->add(my $h = IO::Async::Handle->new(
-			handle => $self->handle,
-			on_write_ready => $self->curry::weak::send_queued,
-			on_read_ready => $self->curry::weak::read_pending,
-		));
-		$h->want_writeready(1);
-		$h->want_readready(1);
-		Scalar::Util::weaken($self->{h} = $h);
+		my $h = delete $args{handle};
+		if($h->isa('IO::Async::Handle')) {
+			$self->{handle} = $h;
+			$self->handle->configure(
+				on_write_ready => $self->curry::weak::send_queued,
+				on_read_ready => $self->curry::weak::read_pending,
+			);
+		} else {
+			$self->add_child(
+				$self->{handle} = IO::Async::Handle->new(
+					handle => $h,
+					on_write_ready => $self->curry::weak::send_queued,
+					on_read_ready => $self->curry::weak::read_pending,
+				)
+			);
+		}
+		$self->handle->want_writeready(0);
+		$self->handle->want_readready(1);
 	};
-	$self
+	$self->SUPER::configure(%args);
 }
 
 sub send {
 	my $self = shift;
-	push @{$self->{pending}}, @_;
-	$self->{h}->want_writeready(1) if $self->{h};
-	$self
+	my @future;
+	for (@_) {
+		push @{$self->{pending}}, [
+			$_,
+			my $f = $self->loop->new_future
+		];
+		push @future, $f;
+	}
+	$self->handle->want_writeready(1) if $self->handle;
+	my $f;
+	$f = Future->wait_all(@future)->on_ready(sub { weaken $f });
+	$f
+}
+
+sub _remove_from_loop {
+	my ($self) = @_;
+	(delete $self->{handle})->close if $self->handle;
+}
+
+sub stop {
+	my ($self) = @_;
+	(delete $self->{handle})->close if $self->handle;
 }
 
 
@@ -214,5 +240,5 @@ Tom Molesworth <cpan@entitymodel.com>
 
 =head1 LICENSE
 
-Copyright Tom Molesworth 2011. Licensed under the same terms as Perl itself.
+Copyright Tom Molesworth 2011-2014. Licensed under the same terms as Perl itself.
 
