@@ -14,6 +14,7 @@ processes via socketpair
 
 =head1 SYNOPSIS
 
+ use feature qw(say);
  my $proc = IO::Async::Process->new(
    code => sub { },
    fd3 => { via => 'socketpair' },
