@@ -15,8 +15,9 @@ processes via socketpair
 =head1 SYNOPSIS
 
  use feature qw(say);
+ my $loop = IO::Async::Loop->new;
  my $proc = IO::Async::Process->new(
-   code => sub { },
+   code => sub { ... },
    fd3 => { via => 'socketpair' },
  );
  $loop->add(my $control = Net::Async::TransferFD->new(
