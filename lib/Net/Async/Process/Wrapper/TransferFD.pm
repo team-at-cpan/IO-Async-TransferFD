@@ -92,32 +92,36 @@ sub new {
 			my $io = IO::Handle->new;
 			die "Failed to open control channel - $!" unless $io->fdopen(3, 'r+');
 			say "i am $io";
+			$io->blocking(0) or warn $!;
 
-			my $control = IO::Async::TransferFD->new(
-				loop => $loop,
+			$loop->add(my $control = Net::Async::TransferFD->new(
 				handle => $io,
-			);
+			));
+			say "set up TFD";
 			$code->(
 				loop => $loop,
 				control => $control,
 			);
+			say "ran code";
 		},
 		fd3 => {
 			via => 'socketpair',
 			# don't really want to pass this, but seems to be required
 			on_read => sub {
 				my ( $stream, $buffref ) = @_;
+				warn "on_read...";
 				$$buffref = '';
 				return 0;
 			},
 		},
 		on_finish => sub { },
+		on_exception => sub {warn "ex @_" },
 		%args,
 	);
 	$loop->add($proc);
 	my $io = $proc->fd(3)->write_handle;
 	say "and parent is $io";
-	my $control = IO::Async::TransferFD->new(
+	my $control = Net::Async::TransferFD->new(
 		loop => $loop,
 		handle => $io,
 		$on_filehandle ? (on_filehandle => $on_filehandle) : (),
