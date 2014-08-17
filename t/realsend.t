@@ -4,7 +4,6 @@ use warnings;
 use Test::More;
 use Test::Fatal;
 
-#use Carp::Always;
 use feature qw(say);
 use IO::Handle;
 use IO::Async::Loop;
@@ -114,7 +113,7 @@ $loop->add(
 note 'Parent - sending FDs to child';
 my $name;
 {
-	(my $fh, $name) = tempfile();
+	(my $fh, $name) = tempfile(UNLINK => 1);
 	$fh->print("some test content");
 	$fh->close;
 }
