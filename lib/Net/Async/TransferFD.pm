@@ -19,7 +19,7 @@ processes via socketpair
    fd3 => { via => 'socketpair' },
  );
  $loop->add(my $control = Net::Async::TransferFD->new(
-   handle => $proc->fd(3)->write_handle,
+   handle => $proc->fd(3),
    on_fh => sub {
      my $h = shift;
      say "New handle $h - " . join '', <$h>;
