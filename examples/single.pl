@@ -1,11 +1,12 @@
 #!/usr/bin/perl 
 use strict;
 use warnings;
-use IO::Async::Process::Wrapper::TransferFD;
+use Net::Async::Process::Wrapper::TransferFD;
 use IO::Async::Listener;
 use IO::Async::Loop;
 use Scalar::Util;
 use feature qw(say);
+use Carp::Always;
 
 ++$|;
 my $loop = IO::Async::Loop->new;
@@ -64,6 +65,7 @@ $loop->later(sub {
 	);
 	open my $fh, '>', 'test.out' or die $!;
 	$fh->print("test data");
+	warn "send handle";
 	$wrapped->send($fh);
 });
 $loop->run;

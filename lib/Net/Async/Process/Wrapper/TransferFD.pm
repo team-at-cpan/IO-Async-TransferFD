@@ -37,7 +37,7 @@ to other active processes.
 
 use IO::Handle;
 use IO::Async::Process;
-use IO::Async::TransferFD;
+use Net::Async::TransferFD;
 use curry::weak;
 
 =head1 METHODS
