@@ -5,7 +5,7 @@ use warnings;
 
 use parent qw(IO::Async::Notifier);
 
-our $VERSION = '0.001';
+our $VERSION = '0.002';
 
 =head1 NAME
 
@@ -44,6 +44,7 @@ use Socket::MsgHdr qw(sendmsg recvmsg);
 use Socket qw(AF_UNIX SOCK_STREAM PF_UNSPEC SOL_SOCKET SCM_RIGHTS);
 use curry::weak;
 use Scalar::Util qw(weaken);
+use Variable::Disposition qw(retain_future);
 
 # Not sure of a good value for this but 16 seems low enough
 # to avoid problems, we'll split into multiple packets if
@@ -142,6 +143,14 @@ sub read_pending {
 	$self->recv_fds($self->curry::accept_fds);
 }
 
+=head2 accept_fds
+
+Attempts to accept the given FDs from the remote.
+
+Will call L</on_fh> for each received file descriptor after reopening.
+
+=cut
+
 sub accept_fds {
 	my ($self, $hdr, $code) = @_;
 	defined(recvmsg $self->handle->write_handle, $hdr, 0)
@@ -159,6 +168,11 @@ sub accept_fds {
 		$self->on_fh($fh);
 	}
 }
+
+=head2 on_fh
+
+Calls the configured filehandle method if provided (via L</configure>(C<on_fh>)).
+=cut
 
 sub on_fh {
 	my ($self, $fh) = @_;
@@ -195,6 +209,13 @@ sub configure {
 	$self->SUPER::configure(%args);
 }
 
+=head2 send
+
+Sends the given FDs to the remote, returning a L<Future> which will resolve once
+all FDs have been transferred.
+
+=cut
+
 sub send {
 	my $self = shift;
 	my @future;
@@ -206,14 +227,14 @@ sub send {
 		push @future, $f;
 	}
 	$self->handle->want_writeready(1) if $self->handle;
-	my $f;
-	$f = Future->wait_all(@future)->on_ready(sub { weaken $f });
-	$f
+	retain_future(
+		Future->wait_all(@future)
+	)
 }
 
 sub _remove_from_loop {
 	my ($self) = @_;
-	(delete $self->{handle})->close if $self->handle;
+	$self->stop;
 }
 
 sub stop {
@@ -238,9 +259,9 @@ __END__
 
 =head1 AUTHOR
 
-Tom Molesworth <cpan@perlsite.co.uk>
+Tom Molesworth <TEAM@cpan.org>
 
 =head1 LICENSE
 
-Copyright Tom Molesworth 2011-2014. Licensed under the same terms as Perl itself.
+Copyright Tom Molesworth 2011-2015. Licensed under the same terms as Perl itself.
 
